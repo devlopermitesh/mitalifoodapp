@@ -217,7 +217,7 @@ jobs:
           EOF
 
       - name: '🔔 Discord - Success'
-        if: success() && secrets.DISCORD_WEBHOOK_URL != ''
+        if: success()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
