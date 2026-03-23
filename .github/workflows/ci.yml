@@ -120,15 +120,47 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: 'Build android release'
+      - name: '🔐 Setup Android upload keystore (from secrets)'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME:-}" == "push" && "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
+              echo "KEYSTORE_BASE64 not set; required to sign release builds on main pushes."
+              exit 1
+            fi
+
+            echo "KEYSTORE_BASE64 not set; skipping keystore creation."
+            exit 0
+          fi
+
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/my-upload-key.keystore
+          chmod 600 android/app/my-upload-key.keystore
+
+          if [[ ! -s android/app/my-upload-key.keystore ]]; then
+            echo "Decoded keystore is empty."
+            exit 1
+          fi
+
+      - name: 'Build Android APK (release if signed, otherwise debug)'
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+
+          if [[ -f app/my-upload-key.keystore ]]; then
+            ./gradlew assembleRelease --no-daemon
+          else
+            echo "Keystore missing; building debug APK instead."
+            ./gradlew assembleDebug --no-daemon
+          fi
 
       - name: 'Upload APK'
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
-          path: android/app/build/outputs/apk/release/*.apk
+          name: app-apk
+          path: android/app/build/outputs/apk/**/*.apk
           retention-days: 7
 
       - name: '🔔 Discord - Build Failed'
@@ -196,6 +228,24 @@ jobs:
           set +o pipefail
           yes | "$SDKMANAGER" --licenses
           set -o pipefail
+
+      - name: '🔐 Setup Android upload keystore (from secrets)'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            echo "KEYSTORE_BASE64 not set; cannot create release signing keystore."
+            exit 1
+          fi
+
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/my-upload-key.keystore
+          chmod 600 android/app/my-upload-key.keystore
+
+          if [[ ! -s android/app/my-upload-key.keystore ]]; then
+            echo "Decoded keystore is empty."
+            exit 1
+          fi
 
       - name: '🔐 Setup Play Store Credentials'
         env:
