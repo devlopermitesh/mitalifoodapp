@@ -1,4 +1,4 @@
-package com.foodapp
+package com.mitalifoodapp
 
 import android.app.Application
 import com.facebook.react.PackageList

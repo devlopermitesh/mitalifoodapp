@@ -1,4 +1,4 @@
-package com.foodapp
+package com.mitalifoodapp
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
