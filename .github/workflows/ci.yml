@@ -1,10 +1,10 @@
-name: "CI/CD"
+name: 'CI/CD'
 
 on:
   push:
-    branches: ["main"]
+    branches: ['main']
   pull_request:
-    branches: ["main"]
+    branches: ['main']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,46 +12,46 @@ concurrency:
 
 jobs:
   lint-and-test:
-    name: "Lint & test"
+    name: 'Lint & test'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: "📥 Checkout code"
+      - name: '📥 Checkout code'
         uses: actions/checkout@v4
 
-      - name: "Setup JDK 17"
+      - name: 'Setup JDK 17'
         uses: actions/setup-java@v4
         with:
-          java-version: "17"
-          distribution: "temurin"
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: "📦 Setup Node.js"
+      - name: '📦 Setup Node.js'
         uses: actions/setup-node@v4
         with:
-          node-version: "22.9.0"
-          cache: "npm"
+          node-version: '22.9.0'
+          cache: 'npm'
 
-      - name: "Install dependencies"
+      - name: 'Install dependencies'
         run: npm ci
 
-      - name: "Run ESLint"
+      - name: 'Run ESLint'
         run: npm run lint
 
-      - name: "Run Prettier"
+      - name: 'Run Prettier'
         run: npm run format
 
-      - name: "Run tests"
+      - name: 'Run tests'
         run: npm run test -- --coverage
 
-      - name: "Upload Coverage Report"
+      - name: 'Upload Coverage Report'
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage/
 
-      - name: "Discord Failure"
-        if: failure() && secrets.DISCORD_WEBHOOK_URL != ''
+      - name: 'Discord Failure'
+        if: failure()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
@@ -60,8 +60,8 @@ jobs:
             -d "{\"embeds\": [{\"title\": \"❌ CI Pipeline Failed\", \"description\": \"Branch: \`${{ github.ref_name }}\`\\nCommit: \`${{ github.sha }}\`\\n[View Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\", \"color\": 15158332}]}" \
             "$DISCORD_WEBHOOK"
 
-      - name: "🔔 Discord - Success"
-        if: success() && secrets.DISCORD_WEBHOOK_URL != ''
+      - name: '🔔 Discord - Success'
+        if: success() && env.DISCORD_WEBHOOK != ''
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
@@ -71,38 +71,46 @@ jobs:
             "$DISCORD_WEBHOOK"
 
   build-android:
-    name: "Build Android APK"
+    name: 'Build Android APK'
     runs-on: ubuntu-latest
     needs: lint-and-test
     timeout-minutes: 30
     steps:
-      - name: "Checkout code"
+      - name: 'Checkout code'
         uses: actions/checkout@v4
 
-      - name: "Setup JDK 17"
+      - name: 'Setup JDK 17'
         uses: actions/setup-java@v4
         with:
-          java-version: "17"
-          distribution: "temurin"
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: "Setup Node.js"
+      - name: 'Setup Node.js'
         uses: actions/setup-node@v4
         with:
-          node-version: "22.9.0"
-          cache: "npm"
+          node-version: '22.9.0'
+          cache: 'npm'
 
-      - name: "Install dependencies"
+      - name: 'Install dependencies'
         run: npm ci
 
-      - name: "Install NDK + accept licenses"
+      - name: 'Install NDK + accept licenses'
         run: |
           set -euo pipefail
           SDKROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
           echo "Using Android SDK at: $SDKROOT"
-          yes | "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
-          "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;28.0.12674087"
+          SDKMANAGER="$SDKROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$SDKMANAGER" ]]; then
+            echo "sdkmanager not found at: $SDKMANAGER"
+            find "$SDKROOT" -maxdepth 4 -type f -name sdkmanager -print || true
+            exit 1
+          fi
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses
+          set -o pipefail
+          "$SDKMANAGER" "ndk;28.0.12674087"
 
-      - name: "Cache Gradle"
+      - name: 'Cache Gradle'
         uses: actions/cache@v4
         with:
           path: |
@@ -112,19 +120,51 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: "Build android release"
-        working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+      - name: '🔐 Setup Android upload keystore (from secrets)'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME:-}" == "push" && "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
+              echo "KEYSTORE_BASE64 not set; required to sign release builds on main pushes."
+              exit 1
+            fi
 
-      - name: "Upload APK"
+            echo "KEYSTORE_BASE64 not set; skipping keystore creation."
+            exit 0
+          fi
+
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/my-upload-key.keystore
+          chmod 600 android/app/my-upload-key.keystore
+
+          if [[ ! -s android/app/my-upload-key.keystore ]]; then
+            echo "Decoded keystore is empty."
+            exit 1
+          fi
+
+      - name: 'Build Android APK (release if signed, otherwise debug)'
+        working-directory: android
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+
+          if [[ -f app/my-upload-key.keystore ]]; then
+            ./gradlew assembleRelease --no-daemon
+          else
+            echo "Keystore missing; building debug APK instead."
+            ./gradlew assembleDebug --no-daemon
+          fi
+
+      - name: 'Upload APK'
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
-          path: android/app/build/outputs/apk/release/*.apk
+          name: app-apk
+          path: android/app/build/outputs/apk/**/*.apk
           retention-days: 7
 
-      - name: "🔔 Discord - Build Failed"
-        if: failure() && secrets.DISCORD_WEBHOOK_URL != ''
+      - name: '🔔 Discord - Build Failed'
+        if: failure()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
@@ -134,7 +174,7 @@ jobs:
             "$DISCORD_WEBHOOK"
 
   deploy:
-    name: "Deploy to Play Store"
+    name: 'Deploy to Play Store'
     runs-on: ubuntu-latest
     needs: build-android
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -143,64 +183,90 @@ jobs:
       name: production
       url: https://play.google.com/store/apps
     steps:
-      - name: "Checkout code"
+      - name: 'Checkout code'
         uses: actions/checkout@v4
 
-      - name: "Setup JDK 17"
+      - name: 'Setup JDK 17'
         uses: actions/setup-java@v4
         with:
-          java-version: "17"
-          distribution: "temurin"
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: "Setup Node.js"
+      - name: 'Setup Node.js'
         uses: actions/setup-node@v4
         with:
-          node-version: "22.9.0"
-          cache: "npm"
+          node-version: '22.9.0'
+          cache: 'npm'
 
-      - name: "Install dependencies"
+      - name: 'Install dependencies'
         run: npm ci
 
-      - name: "Setup Ruby"
+      - name: 'Setup Ruby'
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.2"
+          ruby-version: '3.2'
           bundler-cache: false
           working-directory: android
 
-      - name: "Setup fastlane environment"
+      - name: 'Setup fastlane environment'
         working-directory: android
         run: |
           bundle lock --add-platform x86_64-linux
           bundle lock --add-platform ruby
           bundle install --path vendor/bundle
 
-      - name: "📜 Accept Android SDK Licenses"
+      - name: '📜 Accept Android SDK Licenses'
         run: |
           set -euo pipefail
           SDKROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
-          yes | "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
+          SDKMANAGER="$SDKROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$SDKMANAGER" ]]; then
+            echo "sdkmanager not found at: $SDKMANAGER"
+            find "$SDKROOT" -maxdepth 4 -type f -name sdkmanager -print || true
+            exit 1
+          fi
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses
+          set -o pipefail
 
-      - name: "🔐 Setup Play Store Credentials"
+      - name: '🔐 Setup Android upload keystore (from secrets)'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            echo "KEYSTORE_BASE64 not set; cannot create release signing keystore."
+            exit 1
+          fi
+
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/my-upload-key.keystore
+          chmod 600 android/app/my-upload-key.keystore
+
+          if [[ ! -s android/app/my-upload-key.keystore ]]; then
+            echo "Decoded keystore is empty."
+            exit 1
+          fi
+
+      - name: '🔐 Setup Play Store Credentials'
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
         run: |
-          printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" > android/fastlane/matrixcredential.json
-          chmod 600 android/fastlane/matrixcredential.json
+          printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" > android/fastlane/mitalicredential.json
+          chmod 600 android/fastlane/mitalicredential.json
 
-      - name: "Make gradlew executable"
+      - name: 'Make gradlew executable'
         run: chmod +x android/gradlew
 
-      - name: "🚀 Deploy to Google Play Store"
+      - name: '🚀 Deploy to Google Play Store'
         working-directory: android
         run: bundle exec fastlane playstore
 
-      - name: "🧹 Cleanup Credentials"
+      - name: '🧹 Cleanup Credentials'
         if: always()
-        run: rm -f android/fastlane/matrixcredential.json
+        run: rm -f android/fastlane/mitalicredential.json
 
-      - name: "🔔 Discord - Deploy Failed"
-        if: failure() && secrets.DISCORD_WEBHOOK_URL != ''
+      - name: '🔔 Discord - Deploy Failed'
+        if: failure()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
@@ -216,8 +282,8 @@ jobs:
           }
           EOF
 
-      - name: "🔔 Discord - Success"
-        if: success() && secrets.DISCORD_WEBHOOK_URL != ''
+      - name: '🔔 Discord - Success'
+        if: success()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
